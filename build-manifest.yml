@@ -1,0 +1,38 @@
+name: Build products manifest
+
+on:
+  push:
+    paths:
+      - 'products/**'
+      - 'build_manifest.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Regenerate products.json
+        run: python3 build_manifest.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet products.json; then
+            git add products.json
+            git commit -m "chore: auto-update products.json"
+            git push
+          else
+            echo "No changes to products.json"
+          fi
