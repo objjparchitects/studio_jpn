@@ -1,0 +1,10 @@
+{
+  "brand": "商品サイズ感プレビュー",
+  "label": "Virtual Studio",
+  "products": [
+    {
+      "name": "single_flower_vase_01",
+      "url": "products/single_flower_vase_01.glb"
+    }
+  ]
+}
