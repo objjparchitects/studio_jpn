@@ -22,6 +22,21 @@
     letter-spacing: 0.02em;
   }
 
+  /* Status / error overlay (always visible until scene starts rendering) */
+  #status { position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%); z-index: 1000;
+    padding: 12px 20px; background: rgba(255,255,255,0.85);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--border); border-radius: 2px;
+    font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--muted); text-align: center; max-width: 80vw;
+    white-space: pre-wrap; word-break: break-word; }
+  #status.error { color: #c44; background: rgba(255,240,240,0.95);
+    text-transform: none; letter-spacing: 0.02em; text-align: left;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px;
+    line-height: 1.5; padding: 14px 18px; max-width: 600px; }
+  #status.hidden { display: none; }
+
   /* Products list: bottom-left */
   #products { bottom: 20px; left: 20px; width: 240px; max-height: 50vh;
     display: flex; flex-direction: column; padding: 12px 0; }
@@ -61,6 +76,8 @@
 <body>
 <div id="app"></div>
 
+<div id="status">Loading…</div>
+
 <div class="panel" id="products">
   <div class="list" id="list">
     <div class="empty">読み込み中…</div>
@@ -77,6 +94,28 @@
   <div class="d"><span>H (高さ)</span><span id="dH">—</span></div>
 </div>
 
+<!-- Status & error reporting (runs as a regular script so it executes immediately) -->
+<script>
+  (function () {
+    var el = document.getElementById('status');
+    window.__setStatus = function (msg) { if (el) el.textContent = msg; };
+    window.__setError  = function (msg) {
+      if (!el) return;
+      el.className = 'error';
+      el.textContent = msg;
+    };
+    window.addEventListener('error', function (e) {
+      var msg = 'JS ERROR\n' + (e.message || '') +
+                (e.filename ? '\n' + e.filename + ':' + e.lineno : '');
+      window.__setError(msg);
+    });
+    window.addEventListener('unhandledrejection', function (e) {
+      var r = e.reason || {};
+      window.__setError('PROMISE ERROR\n' + (r.message || String(r)));
+    });
+  })();
+</script>
+
 <script type="importmap">
 {
   "imports": {
@@ -86,15 +125,31 @@
 }
 </script>
 <script type="module">
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+window.__setStatus('Loading three.js…');
+
+let THREE, OrbitControls, GLTFLoader, RoomEnvironment;
+try {
+  THREE = await import('three');
+  OrbitControls = (await import('three/addons/controls/OrbitControls.js')).OrbitControls;
+  GLTFLoader = (await import('three/addons/loaders/GLTFLoader.js')).GLTFLoader;
+  RoomEnvironment = (await import('three/addons/environments/RoomEnvironment.js')).RoomEnvironment;
+} catch (err) {
+  window.__setError('Three.js modules failed to load.\n' + err.message);
+  throw err;
+}
+
+window.__setStatus('Setting up renderer…');
 
 const MANIFEST_URL = new URL('./products.json', window.location.href).href;
 
 const app = document.getElementById('app');
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+} catch (err) {
+  window.__setError('WebGL is not available in this browser.\n' + err.message);
+  throw err;
+}
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -106,8 +161,16 @@ app.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xf6f5f3);
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+
+window.__setStatus('Building environment…');
+try {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const roomEnv = new RoomEnvironment(renderer);
+  scene.environment = pmrem.fromScene(roomEnv, 0.04).texture;
+} catch (err) {
+  window.__setError('Failed to build environment.\n' + err.message);
+  throw err;
+}
 
 const camera = new THREE.PerspectiveCamera(32, window.innerWidth/window.innerHeight, 0.01, 100);
 camera.position.set(1.6, 1.35, 1.7);
@@ -118,7 +181,9 @@ controls.minDistance = 0.5; controls.maxDistance = 8;
 controls.maxPolarAngle = Math.PI * 0.5 - 0.02;
 controls.update();
 
-// Cyclorama
+window.__setStatus('Building scene…');
+
+// ----- Cyclorama -----
 function makeCycGeometry() {
   const width = 8, floorNear = 3, floorFar = -1.0, radius = 0.45, wallTop = 3.2;
   const profile = [];
@@ -148,7 +213,7 @@ const cycMat = new THREE.MeshStandardMaterial({
 const cyc = new THREE.Mesh(makeCycGeometry(), cycMat);
 cyc.receiveShadow = true; scene.add(cyc);
 
-// Lighting
+// ----- Lighting -----
 const key = new THREE.DirectionalLight(0xfff7ec, 2.2);
 key.position.set(-1.8, 2.4, 1.2);
 key.castShadow = true;
@@ -158,17 +223,26 @@ key.shadow.camera.left = -s; key.shadow.camera.right = s;
 key.shadow.camera.top = s; key.shadow.camera.bottom = -s;
 key.shadow.camera.near = 0.1; key.shadow.camera.far = 8; key.shadow.radius = 8;
 scene.add(key);
-scene.add(Object.assign(new THREE.DirectionalLight(0xffffff, 0.55), { position: new THREE.Vector3(2.0, 1.2, 0.8) }));
-scene.add(Object.assign(new THREE.DirectionalLight(0xffe9c8, 1.0), { position: new THREE.Vector3(0.2, 1.4, -2.0) }));
+
+const fill = new THREE.DirectionalLight(0xffffff, 0.55);
+fill.position.set(2.0, 1.2, 0.8);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffe9c8, 1.0);
+rim.position.set(0.2, 1.4, -2.0);
+scene.add(rim);
+
 scene.add(new THREE.AmbientLight(0xffffff, 0.06));
 
-// Desk
+// ----- Desk (W1400 x D700 x H720 mm) -----
 const desk = new THREE.Group();
 const W = 1.4, D = 0.7, H = 0.72, T = 0.025;
 const woodMat = new THREE.MeshStandardMaterial({ color: 0xe2dccd, roughness: 0.75, metalness: 0 });
 const legMat = new THREE.MeshStandardMaterial({ color: 0x2c2c2a, roughness: 0.55, metalness: 0.2 });
 const topMesh = new THREE.Mesh(new THREE.BoxGeometry(W, T, D), woodMat);
-topMesh.position.y = H - T/2; topMesh.castShadow = true; topMesh.receiveShadow = true; desk.add(topMesh);
+topMesh.position.y = H - T/2;
+topMesh.castShadow = true; topMesh.receiveShadow = true;
+desk.add(topMesh);
 const legSize = 0.028, legH = H - T, inset = 0.04;
 const legGeom = new THREE.BoxGeometry(legSize, legH, legSize);
 [
@@ -176,19 +250,24 @@ const legGeom = new THREE.BoxGeometry(legSize, legH, legSize);
   [ W/2-inset-legSize/2, legH/2, -D/2+inset+legSize/2],
   [-W/2+inset+legSize/2, legH/2,  D/2-inset-legSize/2],
   [ W/2-inset-legSize/2, legH/2,  D/2-inset-legSize/2],
-].forEach(p => {
+].forEach(function (p) {
   const m = new THREE.Mesh(legGeom, legMat);
-  m.position.set(...p); m.castShadow = true; desk.add(m);
+  m.position.set(p[0], p[1], p[2]);
+  m.castShadow = true;
+  desk.add(m);
 });
 desk.position.set(0, 0, 0.1);
 scene.add(desk);
 
-// Mannequin
+// ----- Mannequin (175 cm, abstracted) -----
 const mannequin = new THREE.Group();
 const mannMat = new THREE.MeshStandardMaterial({ color: 0xd9d4ca, roughness: 0.78, metalness: 0 });
 function capsule(r, len, pos) {
   const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, len, 6, 16), mannMat);
-  m.position.set(...pos); m.castShadow = true; m.receiveShadow = true; mannequin.add(m); return m;
+  m.position.set(pos[0], pos[1], pos[2]);
+  m.castShadow = true; m.receiveShadow = true;
+  mannequin.add(m);
+  return m;
 }
 capsule(0.05, 0.34, [-0.085, 0.28, 0]);
 capsule(0.05, 0.34, [ 0.085, 0.28, 0]);
@@ -209,25 +288,36 @@ const head = new THREE.Mesh(new THREE.CapsuleGeometry(0.10, 0.06, 8, 20), mannMa
 head.position.set(0, 1.66, 0); head.scale.set(0.95, 1.0, 1.0);
 head.castShadow = true; head.receiveShadow = true; mannequin.add(head);
 const footGeom = new THREE.BoxGeometry(0.10, 0.04, 0.22);
-[-0.085, 0.085].forEach(x => {
+[-0.085, 0.085].forEach(function (x) {
   const f = new THREE.Mesh(footGeom, mannMat);
   f.position.set(x, 0.02, 0.025);
-  f.castShadow = true; f.receiveShadow = true; mannequin.add(f);
+  f.castShadow = true; f.receiveShadow = true;
+  mannequin.add(f);
 });
 mannequin.position.set(0, 0, -0.85);
 scene.add(mannequin);
 
-// Brass material (locked design)
+// ----- Brass material (locked design) -----
+const brassColor = new THREE.Color(0xb5a988);
+brassColor.lerp(new THREE.Color(0xd6a55a), 0.5);
 const brassMat = new THREE.MeshStandardMaterial({
-  color: new THREE.Color(0xb5a988).lerp(new THREE.Color(0xd6a55a), 0.5),
-  metalness: 1.0, roughness: 0.35, envMapIntensity: 1.0,
+  color: brassColor,
+  metalness: 1.0,
+  roughness: 0.35,
+  envMapIntensity: 1.0,
   side: THREE.DoubleSide,
 });
 function applyBrass(root) {
-  root.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; n.material = brassMat; } });
+  root.traverse(function (n) {
+    if (n.isMesh) {
+      n.castShadow = true;
+      n.receiveShadow = true;
+      n.material = brassMat;
+    }
+  });
 }
 
-// Product placement
+// ----- Product placement -----
 let currentObject = null;
 let currentSizeMeters = null;
 let currentUnit = 'cm';
@@ -259,27 +349,28 @@ function setActiveObject(obj) {
   placeOnDesk(currentObject);
 }
 
-// Products library
+// ----- Products library -----
 const loader = new GLTFLoader();
 const products = [];
 let activeId = null;
 let nextId = 1;
-
 const $list = document.getElementById('list');
 function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  return String(s).replace(/[&<>"']/g, function (c) {
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+  });
 }
 function renderList() {
   if (products.length === 0) {
-    $list.innerHTML = `<div class="empty">商品が登録されていません</div>`;
+    $list.innerHTML = '<div class="empty">商品が登録されていません</div>';
     return;
   }
   $list.innerHTML = '';
-  products.forEach(p => {
+  products.forEach(function (p) {
     const div = document.createElement('div');
     div.className = 'item' + (p.id === activeId ? ' active' : '');
-    div.innerHTML = `<div class="name">${escapeHtml(p.name)}</div>`;
-    div.addEventListener('click', () => selectProduct(p.id));
+    div.innerHTML = '<div class="name">' + escapeHtml(p.name) + '</div>';
+    div.addEventListener('click', function () { selectProduct(p.id); });
     $list.appendChild(div);
   });
 }
@@ -290,7 +381,7 @@ async function loadProduct(p) {
   return p.sceneCache;
 }
 async function selectProduct(id) {
-  const p = products.find(x => x.id === id);
+  const p = products.find(function (x) { return x.id === id; });
   if (!p) return;
   activeId = id;
   renderList();
@@ -300,16 +391,19 @@ async function selectProduct(id) {
     applyBrass(inst);
     setActiveObject(inst);
   } catch (err) {
-    console.error('Load error', err);
+    console.error('Product load error', err);
+    $list.querySelectorAll('.item').forEach(function (el) {
+      if (parseInt(el.dataset.id) === id) el.style.color = '#c44';
+    });
   }
 }
 async function loadManifest() {
   try {
     const res = await fetch(MANIFEST_URL, { cache: 'no-store' });
-    if (!res.ok) throw new Error(`Manifest fetch failed: ${res.status}`);
+    if (!res.ok) throw new Error('Manifest fetch failed: ' + res.status);
     const manifest = await res.json();
     const base = new URL(MANIFEST_URL, window.location.href);
-    (manifest.products || []).forEach(item => {
+    (manifest.products || []).forEach(function (item) {
       products.push({
         id: nextId++,
         name: item.name || item.url.split('/').pop(),
@@ -321,33 +415,44 @@ async function loadManifest() {
     if (products.length > 0) selectProduct(products[0].id);
   } catch (err) {
     console.error('Manifest load error', err);
-    $list.innerHTML = `<div class="empty">商品リストを読み込めませんでした</div>`;
+    $list.innerHTML = '<div class="empty">商品リストを読み込めませんでした<br>(' +
+                      escapeHtml(err.message) + ')</div>';
   }
 }
 
-// Unit toggle
-document.querySelectorAll('#dims .unit-toggle button').forEach(btn => {
-  btn.addEventListener('click', () => {
+// ----- Unit toggle -----
+document.querySelectorAll('#dims .unit-toggle button').forEach(function (btn) {
+  btn.addEventListener('click', function () {
     const u = btn.dataset.unit;
     if (u === currentUnit) return;
     currentUnit = u;
-    document.querySelectorAll('#dims .unit-toggle button').forEach(b => {
+    document.querySelectorAll('#dims .unit-toggle button').forEach(function (b) {
       b.classList.toggle('on', b.dataset.unit === currentUnit);
     });
     updateDimsDisplay();
   });
 });
 
-window.addEventListener('resize', () => {
+window.addEventListener('resize', function () {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
+
 (function tick() {
   requestAnimationFrame(tick);
   controls.update();
   renderer.render(scene, camera);
 })();
+
+// Hide loading overlay once the scene has started rendering
+window.__setStatus('Loading products…');
+requestAnimationFrame(function () {
+  requestAnimationFrame(function () {
+    const el = document.getElementById('status');
+    if (el) el.className = 'hidden';
+  });
+});
 
 loadManifest();
 </script>
